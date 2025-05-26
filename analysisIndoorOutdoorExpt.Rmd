@@ -1,0 +1,149 @@
+---
+title: "Analysis of In/Out Experiment Data from One Subject"
+author: "Robert Sekuler"
+date: "`r Sys.Date()`"
+output: html_document
+params:
+  show_code: FALSE  # Set to TRUE to display code
+---
+
+```{r setup, include=FALSE}
+# Load required packages
+library(readr)
+library(dplyr)
+library(knitr)
+library(openxlsx)  # for Excel output
+library(stringr)
+
+# Control whether code is shown
+the_echo <- params$show_code
+knitr::opts_chunk$set(echo = the_echo)
+
+# Define path to your CSV file
+data_file <- "~/Desktop/rs_inORoutExpt_2025-04-28_16h43.25.066.csv"
+```
+
+## 1. Read, select data, and extract metadata
+- Reads in the CSV file, skipping empty rows, selects the relevant columns, and removes separator lines.
+- Parses the filename to extract `subject_id`, `run_date`, and `run_time`.
+
+```{r read-data}
+# Read CSV, select first 8 columns, filter out empty lines
+dat <- read_csv(
+  data_file,
+  skip_empty_rows = TRUE
+) %>%
+  select(
+    blocks.thisN,
+    trials.thisN,
+    StimulusPresented,
+    stimulusCategory,
+    BlurLevel,
+    choice.keys,
+    correct,
+    choice.rt
+  ) %>%
+  filter(!is.na(StimulusPresented))
+
+# Extract metadata
+fname      <- basename(data_file)
+no_ext     <- tools::file_path_sans_ext(fname)
+parts      <- str_split(no_ext, "_")[[1]]
+subject_id <- parts[1]
+run_date   <- parts[2]
+run_time   <- parts[3]
+
+# Display metadata
+cat("**Subject:**", subject_id, "  ",
+    "**Run date:**", run_date, "  ",
+    "**Run time:**", run_time, "\n")
+```
+
+## 2. Define conditions
+- Assigns each trial to one of four conditions: indoor_sharp, indoor_blurred, outdoor_sharp, outdoor_blurred.
+
+```{r define-conditions}
+dat <- dat %>%
+  mutate(
+    condition = case_when(
+      stimulusCategory == "i" & BlurLevel == 0 ~ "indoor_sharp",
+      stimulusCategory == "i" & BlurLevel == 1 ~ "indoor_blurred",
+      stimulusCategory == "o" & BlurLevel == 0 ~ "outdoor_sharp",
+      stimulusCategory == "o" & BlurLevel == 1 ~ "outdoor_blurred",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+## 3. Summarize across all blocks by condition
+- Computes trial count, percent correct, and RT statistics (mean, median, SD) using only correct trials.
+- Rounds all numeric results to four decimal places and adds `subject` column.
+
+```{r summarize-condition}
+summary_by_cond <- dat %>%
+  group_by(condition) %>%
+  summarize(
+    n_trials     = n(),
+    prop_correct = round(mean(correct, na.rm = TRUE) * 100, 4),
+    mean_rt      = round(mean(choice.rt[correct == 1],   na.rm = TRUE), 4),
+    median_rt    = round(median(choice.rt[correct == 1], na.rm = TRUE), 4),
+    sd_rt        = round(sd(choice.rt[correct == 1],     na.rm = TRUE), 4)
+  ) %>%
+  ungroup() %>%
+  mutate(subject = subject_id) %>%
+  select(subject, everything()) %>%
+  arrange(condition)
+
+# Display summary table
+kable(summary_by_cond,
+      caption = "Summary of accuracy and RT by condition (all blocks combined)")
+```
+
+## 4. Summarize within each block by condition
+- Produces the same metrics as above, but broken down by block number.
+
+```{r summarize-by-block}
+summary_by_block_and_cond <- dat %>%
+  group_by(blocks.thisN, condition) %>%
+  summarize(
+    n_trials     = n(),
+    prop_correct = round(mean(correct, na.rm = TRUE) * 100, 4),
+    mean_rt      = round(mean(choice.rt[correct == 1],   na.rm = TRUE), 4),
+    median_rt    = round(median(choice.rt[correct == 1], na.rm = TRUE), 4),
+    sd_rt        = round(sd(choice.rt[correct == 1],     na.rm = TRUE), 4)
+  ) %>%
+  ungroup() %>%
+  mutate(subject = subject_id) %>%
+  select(subject, blocks.thisN, condition, everything()) %>%
+  arrange(blocks.thisN, condition)
+
+# Display summary table
+kable(summary_by_block_and_cond,
+      caption = "Summary of accuracy and RT by block and condition")
+```
+
+## 5. Export results to Excel
+- Writes both summary tables to an `.xlsx` on your Desktop, named using the subject ID, date, and time.
+
+```{r export-excel}
+# Prepare output filename on Desktop
+out_fname <- file.path(
+  "~/Desktop",
+  paste0(
+    subject_id, "_", run_date, "_", run_time, "_summary.xlsx"
+  )
+)
+
+# Write to Excel
+write.xlsx(
+  list(
+    Overall  = summary_by_cond,
+    By_Block = summary_by_block_and_cond
+  ),
+  file = out_fname,
+  overwrite = TRUE
+)
+
+# Inform where the file is saved
+cat("Results exported to:", out_fname, "\n")
+```
